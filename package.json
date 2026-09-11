@@ -1,6 +1,6 @@
 {
   "name": "delegation-worker-mcp",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "description": "Universal worker delegation MCP with Codex-native third-party worker execution and bounded supervision.",
