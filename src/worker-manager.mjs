@@ -3,6 +3,7 @@ import { CodexAppServerClient } from './app-server.mjs';
 import { CODEX_PROVIDER_ID } from './codex-config.mjs';
 import { reasoningSelection } from './capabilities.mjs';
 import { DEFAULT_LEASE_MS, DEFAULT_MAX_TOTAL_MS } from './store.mjs';
+import { codexParity } from './codex-model-info.mjs';
 
 const TERMINAL = new Set(['completed', 'failed', 'timed_out', 'cancelled']);
 const MAX_EVENTS = 100;
@@ -144,6 +145,8 @@ export class WorkerManager {
       provider: { id: provider.id, name: provider.name },
       model: { id: model.id, name: model.name },
       reasoning,
+      compatibility: codexParity(model),
+      backend: 'official-thread-start',
       access: profile.access,
       autoVerify: Boolean(profile.autoVerify),
       supervision: {
