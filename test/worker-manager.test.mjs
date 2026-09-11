@@ -251,3 +251,27 @@ test('failed official interrupt never produces a false cancelled state', async (
   const done = await manager.wait(started.taskId, 1000, 'main-thread');
   assert.equal(done.status, 'completed');
 });
+
+test('initialize fails orphaned persisted tasks closed without claiming cancellation', async () => {
+  const { env, store, taskStore } = await configured({ autoVerify: false });
+  await taskStore.write({
+    taskId: 'wrk_orphan1',
+    supervisorThreadId: 'main-thread',
+    status: 'running',
+    phase: 'Working',
+    createdAt: new Date(Date.now() - 5000).toISOString(),
+    updatedAt: new Date(Date.now() - 1000).toISOString(),
+    events: []
+  });
+  const manager = new WorkerManager({
+    store, taskStore, env, codexConfig: codexConfig(env),
+    clientFactory: () => new CompletingClient()
+  });
+  await manager.initialize();
+  const recovered = await taskStore.read('wrk_orphan1');
+  assert.equal(recovered.status, 'failed');
+  assert.equal(recovered.error.code, 'WORKER_CONTROL_PLANE_RESTARTED');
+  assert.equal(recovered.recovery.strategy, 'fail_closed_no_reattach');
+  assert.equal(recovered.recovery.officialInterruptConfirmed, false);
+  assert.notEqual(recovered.status, 'cancelled');
+});
