@@ -20,6 +20,49 @@ function boolAt(obj, keys) {
   return null;
 }
 
+function capabilityContainers(raw) {
+  return [
+    raw,
+    raw?.metadata,
+    raw?.capabilities,
+    raw?.metadata?.capabilities,
+    raw?.tools,
+    raw?.metadata?.tools
+  ].filter((value) => value && typeof value === 'object' && !Array.isArray(value));
+}
+
+function advertisedBool(containers, keys) {
+  for (const container of containers) {
+    for (const key of keys) {
+      if (typeof container?.[key] === 'boolean') return { value: container[key], field: key };
+    }
+  }
+  return { value: null, field: null };
+}
+
+function advertisedNumber(containers, keys) {
+  for (const container of containers) {
+    for (const key of keys) {
+      const value = Number(container?.[key]);
+      if (Number.isFinite(value) && value > 0) return { value, field: key };
+    }
+  }
+  return { value: null, field: null };
+}
+
+function advertisedModalities(containers) {
+  const keys = ['inputModalities', 'input_modalities', 'modalities'];
+  for (const container of containers) {
+    const values = arrayAt(container, keys);
+    if (!values) continue;
+    const normalized = [...new Set(values
+      .map((value) => text(value, 64).toLowerCase())
+      .filter((value) => ['text', 'image', 'audio'].includes(value)))];
+    if (normalized.length) return { value: normalized, field: keys.find((key) => Array.isArray(container?.[key])) || null };
+  }
+  return { value: [], field: null };
+}
+
 function optionValue(item) {
   if (typeof item === 'string' || typeof item === 'number') return text(item, MAX_OPTION);
   if (!item || typeof item !== 'object') return '';
@@ -117,6 +160,65 @@ export function normalizeReasoningCapability(rawModel = {}, { override = null, s
   return effortCapability(rawModel, source) || thinkingCapability(rawModel, source) || capability('unknown', [], 'unknown', 'none', 'auto', null);
 }
 
+export function normalizeCodexModelCapability(rawModel = {}, { override = null } = {}) {
+  const containers = capabilityContainers(rawModel);
+  const functionTools = advertisedBool(containers, [
+    'supportsFunctionCalling', 'supports_function_calling',
+    'supportsToolCalls', 'supports_tool_calls',
+    'supportsTools', 'supports_tools'
+  ]);
+  const customTools = advertisedBool(containers, [
+    'supportsCustomTools', 'supports_custom_tools',
+    'supportsFreeformTools', 'supports_freeform_tools',
+    'customTools', 'custom_tools',
+    'freeformTools', 'freeform_tools'
+  ]);
+  const parallelToolCalls = advertisedBool(containers, ['supportsParallelToolCalls', 'supports_parallel_tool_calls']);
+  const supportsSearchTool = advertisedBool(containers, ['supportsSearchTool', 'supports_search_tool']);
+  const contextWindow = advertisedNumber(containers, ['contextWindow', 'context_window', 'maxContextWindow', 'max_context_window']);
+  const inputModalities = advertisedModalities(containers);
+
+  const fields = [
+    functionTools.field, customTools.field, parallelToolCalls.field,
+    supportsSearchTool.field, contextWindow.field, inputModalities.field
+  ];
+  const normalized = {
+    source: fields.some(Boolean) ? 'upstream_metadata' : 'unknown',
+    functionTools: functionTools.value,
+    customTools: customTools.value,
+    mcpTools: functionTools.value,
+    parallelToolCalls: parallelToolCalls.value,
+    supportsSearchTool: supportsSearchTool.value,
+    contextWindow: contextWindow.value,
+    inputModalities: inputModalities.value,
+    evidence: {
+      functionTools: functionTools.field,
+      customTools: customTools.field,
+      parallelToolCalls: parallelToolCalls.field,
+      supportsSearchTool: supportsSearchTool.field,
+      contextWindow: contextWindow.field,
+      inputModalities: inputModalities.field
+    }
+  };
+
+  if (override && typeof override === 'object') {
+    for (const key of ['functionTools', 'customTools', 'mcpTools', 'parallelToolCalls', 'supportsSearchTool']) {
+      if (typeof override[key] === 'boolean') normalized[key] = override[key];
+    }
+    const context = Number(override.contextWindow);
+    if (Number.isFinite(context) && context > 0) normalized.contextWindow = context;
+    if (Array.isArray(override.inputModalities)) {
+      normalized.inputModalities = [...new Set(override.inputModalities
+        .map((value) => text(value, 64).toLowerCase())
+        .filter((value) => ['text', 'image', 'audio'].includes(value)))];
+    }
+    normalized.source = 'operator_override';
+    normalized.evidence = { operator: true };
+  }
+
+  return normalized;
+}
+
 export function publicModel(raw = {}, { override = null } = {}) {
   const id = text(raw.id ?? raw.model ?? raw.name, 512);
   if (!id) return null;
@@ -125,6 +227,7 @@ export function publicModel(raw = {}, { override = null } = {}) {
     name: text(raw.display_name ?? raw.displayName ?? raw.name, 1024) || id,
     ownedBy: text(raw.owned_by ?? raw.ownedBy, 256) || null,
     reasoning: normalizeReasoningCapability(raw, { override }),
+    codex: normalizeCodexModelCapability(raw, { override: override?.codex || null }),
     raw
   };
 }
