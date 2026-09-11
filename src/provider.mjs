@@ -84,6 +84,33 @@ export async function listProviderModels({ provider, apiKey, fetchImpl = fetch, 
   return models;
 }
 
+async function probeResponsesToolAcceptance({ provider, apiKey, model, tools, fetchImpl = fetch, timeoutMs = 15000 }) {
+  const ep = endpoints(provider.baseUrl);
+  const response = await fetchImpl(ep.responses, {
+    method: 'POST',
+    headers: authHeaders(provider, apiKey),
+    body: JSON.stringify({
+      model,
+      input: 'Use the provided probe tool exactly once, then stop.',
+      tools,
+      max_output_tokens: 16,
+      stream: true
+    }),
+    signal: AbortSignal.timeout(timeoutMs)
+  });
+  if (response.ok) {
+    await response.body?.cancel?.().catch?.(() => {});
+    return { supported: true, status: response.status, error: null };
+  }
+  const errorText = await readLimited(response, MAX_ERROR);
+  const definitelyUnsupported = [400, 404, 405, 409, 415, 422, 501].includes(response.status);
+  return {
+    supported: definitelyUnsupported ? false : null,
+    status: response.status,
+    error: trimError(errorText)
+  };
+}
+
 export async function probeProtocol({ provider, apiKey, model, fetchImpl = fetch, timeoutMs = 15000 }) {
   const ep = endpoints(provider.baseUrl);
   const headers = authHeaders(provider, apiKey);
@@ -97,6 +124,66 @@ export async function probeProtocol({ provider, apiKey, model, fetchImpl = fetch
   if (cr.ok) { await cr.body?.cancel?.().catch?.(() => {}); return { protocol: 'chat', status: cr.status, ok: true, responsesStatus: rr.status }; }
   const crText = await readLimited(cr, MAX_ERROR);
   return { protocol: 'unknown', status: cr.status, ok: false, responsesStatus: rr.status, error: trimError(crText) };
+}
+
+export async function probeCodexCompatibility({ provider, apiKey, model, fetchImpl = fetch, timeoutMs = 15000 }) {
+  const protocol = await probeProtocol({ provider, apiKey, model, fetchImpl, timeoutMs });
+  if (!protocol.ok || protocol.protocol !== 'responses') {
+    return {
+      ...protocol,
+      grade: protocol.protocol === 'chat' ? 'chat-compatibility' : 'unavailable',
+      codex: {
+        functionTools: null,
+        customTools: false,
+        mcpTools: null,
+        parallelToolCalls: null
+      },
+      probedAt: new Date().toISOString()
+    };
+  }
+
+  const functionProbe = await probeResponsesToolAcceptance({
+    provider, apiKey, model, fetchImpl, timeoutMs,
+    tools: [{
+      type: 'function',
+      name: 'dwmcp_probe_function',
+      description: 'Compatibility probe. Call this function exactly once.',
+      strict: false,
+      parameters: {
+        type: 'object',
+        properties: { value: { type: 'string' } },
+        required: ['value'],
+        additionalProperties: false
+      }
+    }]
+  });
+
+  const customProbe = await probeResponsesToolAcceptance({
+    provider, apiKey, model, fetchImpl, timeoutMs,
+    tools: [{
+      type: 'custom',
+      name: 'dwmcp_probe_custom',
+      description: 'Compatibility probe. Emit exactly OK.',
+      format: { type: 'grammar', syntax: 'lark', definition: 'start: "OK"' }
+    }]
+  });
+
+  const functionTools = functionProbe.supported;
+  const customTools = customProbe.supported;
+  return {
+    ...protocol,
+    grade: functionTools === true && customTools === true
+      ? 'full-candidate'
+      : (functionTools === true ? 'responses-function' : 'responses-basic'),
+    codex: {
+      functionTools,
+      customTools,
+      mcpTools: functionTools,
+      parallelToolCalls: null
+    },
+    probes: { function: functionProbe, custom: customProbe },
+    probedAt: new Date().toISOString()
+  };
 }
 
 export function applyReasoningToResponses(body, capability, selected) {
