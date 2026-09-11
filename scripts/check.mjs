@@ -8,9 +8,14 @@ const html = await fs.readFile(path.join(projectRoot, 'app', 'control.html'), 'u
 for (const needle of ['ui/initialize','session_mode_set','worker_profile_set','provider_save','WORKER','NATIVE']) if (!html.includes(needle)) throw new Error(`MCP App control surface is incomplete: ${needle}`);
 if (Buffer.byteLength(html, 'utf8') > 512 * 1024) throw new Error('MCP App is unexpectedly large');
 const mcp = await fs.readFile(path.join(projectRoot, 'mcp', 'server.mjs'), 'utf8');
-for (const needle of ['contextFrom','threadId','worker_extend','worker_respond','session_mode_get','session_mode_set']) if (!mcp.includes(needle)) throw new Error(`MCP supervision contract missing: ${needle}`);
+for (const needle of ['contextFrom','threadId','worker_extend','worker_respond','session_mode_get','session_mode_set','server/discover','MCP_APP_CAPABILITY_REQUIRED','2026-07-28']) if (!mcp.includes(needle)) throw new Error(`MCP supervision contract missing: ${needle}`);
 const manager = await fs.readFile(path.join(projectRoot, 'src', 'worker-manager.mjs'), 'utf8');
-for (const needle of ['autoExtensionCount','pendingInteraction','client.steer','progressEvidence','leaseDeadlineAt','hardDeadlineAt']) if (!manager.includes(needle)) throw new Error(`Worker supervision contract missing: ${needle}`);
+for (const needle of ['autoExtensionCount','pendingInteractions','client.steer','progressEvidence','leaseDeadlineAt','hardDeadlineAt','interruptAndConfirm','VERIFIER_SCHEMA','verification_failed','controllerLivenessAt','lastRuntimeEventAt']) if (!manager.includes(needle)) throw new Error(`Worker supervision contract missing: ${needle}`);
+const appServer = await fs.readFile(path.join(projectRoot, 'src', 'app-server.mjs'), 'utf8');
+for (const needle of ['thread/read','thread/unsubscribe','interruptAndConfirm','DWMCP_GATEWAY_TOKEN','--config']) if (!appServer.includes(needle)) throw new Error(`Codex authoritative runtime contract missing: ${needle}`);
+const codexConfig = await fs.readFile(path.join(projectRoot, 'src', 'codex-config.mjs'), 'utf8');
+if (codexConfig.includes('command = "cat"')) throw new Error('legacy shell credential helper must not return');
+if (!codexConfig.includes('processScoped')) throw new Error('Codex provider must remain process-scoped');
 const sealFiles = ['tests/upstream-lock.json','scripts/verify-upstream-contracts.mjs','scripts/source-seal.mjs','scripts/target-seal.mjs','scripts/release-seal.mjs'];
 for (const rel of sealFiles) await fs.access(path.join(projectRoot, rel));
 console.log(`check ok: ${modules.length} modules, app=${Buffer.byteLength(html, 'utf8')} bytes, supervision=bounded, seal=source+target+release`);
