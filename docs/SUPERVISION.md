@@ -57,4 +57,11 @@ Automatic renewal is evidence-based and bounded; it is not an infinite timeout r
 
 ## Upstream-first maintenance
 
-The Codex adapter relies on public official App Server methods and generated schemas. `tests/upstream-lock.json` pins the exact validated upstream commit and CI checks the contracts needed by this project. No private Codex database or ChatGPT backend is used.
+The Codex adapter relies on public official App Server methods and generated schemas. `tests/upstream-lock.json` pins the exact validated upstream commit and CI checks the contracts needed by this project, including model discovery and agent authority inheritance. The generic Codex worker prompt used for third-party route aliases is vendored from that same exact upstream commit and checked byte-for-byte. No private Codex database or ChatGPT backend is used.
+
+Worker compatibility is evidence-based:
+
+- upstream metadata is never inferred from a model name;
+- active probes distinguish native Responses, function tools and custom/freeform tools;
+- the gateway projects only proven capability into Codex `ModelInfo`;
+- the production target seal still requires real native patch and MCP behavior before archive readiness.
