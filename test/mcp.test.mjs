@@ -28,7 +28,7 @@ async function spawnMcp(prefix = 'dwmcp-mcp-') {
   let stderr = '';
   child.stderr.setEncoding('utf8');
   child.stderr.on('data', (value) => { stderr += value; });
-  return { child, home, call: rpcClient(child), stderr: () => stderr };
+  return { child, home, call: rpcClient(child, () => stderr), stderr: () => stderr };
 }
 
 async function stopMcp(instance) {
@@ -39,7 +39,7 @@ async function stopMcp(instance) {
   });
 }
 
-function rpcClient(child) {
+function rpcClient(child, stderr = () => '') {
   let buffer = '';
   const waits = new Map();
   child.stdout.setEncoding('utf8');
@@ -57,11 +57,19 @@ function rpcClient(child) {
     }
   });
   let id = 1;
+  const failAll = (error) => {
+    for (const [key, waiter] of waits) {
+      waits.delete(key);
+      waiter.reject(error);
+    }
+  };
+  child.once('error', (error) => failAll(error));
+  child.once('exit', (code, signal) => failAll(new Error(`MCP child exited code=${code ?? 'null'} signal=${signal ?? 'null'}; stderr=${stderr().trim().slice(-2000)}`)));
   return (method, params = {}) => new Promise((resolve, reject) => {
     const current = id++;
     const timer = setTimeout(() => {
       waits.delete(current);
-      reject(new Error(`timeout ${method}`));
+      reject(new Error(`timeout ${method}; childExit=${child.exitCode ?? 'running'}; stderr=${stderr().trim().slice(-2000)}`));
     }, 5000);
     waits.set(current, { resolve: (value) => { clearTimeout(timer); resolve(value); } });
     child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: current, method, params })}\n`);
