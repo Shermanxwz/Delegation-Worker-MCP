@@ -1,39 +1,108 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "repository": "openai/codex",
-  "commit": "2c9e1a5775caedcfccd64ba7dc928ed63d6ed058",
+  "commit": "e3a52b87b28760413eafa340e2ab23d653f0bbe7",
   "contracts": [
     {
       "path": "codex-rs/app-server-protocol/schema/typescript/v2/ThreadStartParams.ts",
-      "needles": ["modelProvider", "approvalPolicy", "sandbox", "developerInstructions"]
+      "needles": [
+        "modelProvider",
+        "approvalPolicy",
+        "sandbox",
+        "developerInstructions"
+      ]
+    },
+    {
+      "path": "codex-rs/app-server-protocol/schema/typescript/v2/ThreadForkParams.ts",
+      "needles": [
+        "modelProvider",
+        "approvalPolicy",
+        "sandbox",
+        "developerInstructions"
+      ]
     },
     {
       "path": "codex-rs/app-server-protocol/schema/typescript/v2/TurnStartParams.ts",
-      "needles": ["sandboxPolicy", "effort", "threadId"]
-    },
-    {
-      "path": "codex-rs/app-server-protocol/schema/typescript/v2/SandboxPolicy.ts",
-      "needles": ["dangerFullAccess", "readOnly", "networkAccess", "workspaceWrite"]
+      "needles": [
+        "sandboxPolicy",
+        "effort",
+        "threadId"
+      ]
     },
     {
       "path": "codex-rs/app-server-protocol/schema/typescript/ModeKind.ts",
-      "needles": ["plan", "default"]
+      "needles": [
+        "plan",
+        "default"
+      ]
     },
     {
       "path": "codex-rs/app-server-protocol/schema/typescript/ServerRequest.ts",
-      "needles": ["item/commandExecution/requestApproval", "item/fileChange/requestApproval", "item/tool/requestUserInput", "mcpServer/elicitation/request", "item/permissions/requestApproval", "item/tool/call"]
+      "needles": [
+        "item/commandExecution/requestApproval",
+        "item/fileChange/requestApproval",
+        "item/tool/requestUserInput",
+        "mcpServer/elicitation/request",
+        "item/permissions/requestApproval",
+        "item/tool/call"
+      ]
     },
     {
       "path": "codex-rs/core/src/mcp_tool_call.rs",
-      "needles": ["MCP_TOOL_THREAD_ID_META_KEY", "\"threadId\"", "with_mcp_tool_call_ids_meta", "MCP_TOOL_ITEM_ID_META_KEY"]
+      "needles": [
+        "MCP_TOOL_THREAD_ID_META_KEY",
+        "\"threadId\"",
+        "with_mcp_tool_call_ids_meta",
+        "MCP_TOOL_ITEM_ID_META_KEY"
+      ]
     },
     {
       "path": "codex-rs/core/src/tools/handlers/plan.rs",
-      "needles": ["ModeKind::Plan", "update_plan", "not allowed in Plan mode"]
+      "needles": [
+        "ModeKind::Plan",
+        "update_plan",
+        "not allowed in Plan mode"
+      ]
     },
     {
       "path": "codex-rs/core/src/tools/spec_plan.rs",
-      "needles": ["SpawnAgentHandler", "SendInputHandler", "WaitAgentHandler", "ApplyPatchHandler", "ExecCommandHandler"]
+      "needles": [
+        "SpawnAgentHandler",
+        "ApplyPatchHandler",
+        "ExecCommandHandler",
+        "agent_max_depth"
+      ]
+    },
+    {
+      "path": "codex-rs/protocol/src/openai_models.rs",
+      "needles": [
+        "pub struct ModelInfo",
+        "apply_patch_tool_type",
+        "ConfigShellToolType",
+        "pub struct ModelsResponse"
+      ]
+    },
+    {
+      "path": "codex-rs/model-provider/src/provider.rs",
+      "needles": [
+        "OpenAiModelsEndpoint",
+        "OpenAiModelsManager",
+        "StaticModelsManager"
+      ]
+    },
+    {
+      "path": "codex-rs/core/src/agent/control/spawn.rs",
+      "needles": [
+        "model_provider_id",
+        "runtime_permission_profile",
+        "client_mcp_extensions"
+      ]
+    }
+  ],
+  "vendored": [
+    {
+      "path": "codex-rs/models-manager/prompt.md",
+      "localPath": "vendor/codex-model-prompt.md"
     }
   ]
 }
