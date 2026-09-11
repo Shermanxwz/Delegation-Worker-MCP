@@ -71,9 +71,9 @@ let serial = 0;
 
 async function log(event) {
   if (!logFile) return;
-  await fs.appendFile(logFile, JSON.stringify({ at: Date.now(), ...event }) + '\\n');
+  await fs.appendFile(logFile, JSON.stringify({ at: Date.now(), ...event }) + '\n');
 }
-function send(value) { process.stdout.write(JSON.stringify(value) + '\\n'); }
+function send(value) { process.stdout.write(JSON.stringify(value) + '\n'); }
 function result(id, value = {}) { send({ jsonrpc: '2.0', id, result: value }); }
 function notify(method, params = {}) { send({ jsonrpc: '2.0', method, params }); }
 
@@ -132,7 +132,7 @@ rl.on('line', async (line) => {
           evidence: ['fake Codex observed a successful provider response']
         });
       } else {
-        await fs.writeFile(thread.cwd + '/simulated-worker-proof.txt', 'SIMULATED_WORKER_OK\\n', 'utf8');
+        await fs.writeFile(thread.cwd + '/simulated-worker-proof.txt', 'SIMULATED_WORKER_OK\n', 'utf8');
         notify('item/started', { threadId: thread.id, turnId, item: { type: 'commandExecution', command: 'simulated-provider-roundtrip', status: 'inProgress' } });
         notify('item/completed', { threadId: thread.id, turnId, item: { type: 'fileChange', changes: [{ path: 'simulated-worker-proof.txt' }], status: 'completed' } });
       }
