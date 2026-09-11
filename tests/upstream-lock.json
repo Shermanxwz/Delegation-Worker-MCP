@@ -12,7 +12,7 @@
       "needles": ["sandboxPolicy", "effort", "threadId"]
     },
     {
-      "path": "codex-rs/app-server-protocol/schema/typescript/SandboxPolicy.ts",
+      "path": "codex-rs/app-server-protocol/schema/typescript/v2/SandboxPolicy.ts",
       "needles": ["dangerFullAccess", "readOnly", "networkAccess", "workspaceWrite"]
     },
     {
