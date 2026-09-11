@@ -15,7 +15,19 @@ async function configured() {
   const store = new StateStore({ env });
   const taskStore = new TaskStore({ env });
   const provider = await store.saveProvider({ name: 'P', baseUrl: 'https://example.com/v1', adapter: 'openai-compatible' });
-  await store.setProviderModels(provider.id, [{ id: 'mini', name: 'Mini', reasoning }]);
+  await store.setProviderModels(provider.id, [{
+    id: 'mini',
+    name: 'Mini',
+    reasoning,
+    codex: { source: 'unknown', functionTools: null, customTools: null, mcpTools: null, inputModalities: [] },
+    probe: {
+      ok: true,
+      protocol: 'responses',
+      grade: 'full-candidate',
+      probedAt: new Date().toISOString(),
+      codex: { functionTools: true, customTools: true, mcpTools: true, parallelToolCalls: null }
+    }
+  }]);
   await store.setProfile({ providerId: provider.id, modelId: 'mini', reasoning: 'on', access: 'danger-full-access', autoVerify: true }, 'main-thread');
   await store.setSessionMode('main-thread', 'WORKER');
   return { dir, env, store, taskStore, provider };
@@ -47,6 +59,9 @@ test('Worker route is per supervisor session and completion includes plan + read
   assert.equal(done.model.id, 'mini');
   assert.equal(done.reasoning, 'on');
   assert.equal(done.access, 'danger-full-access');
+  assert.equal(done.compatibility.grade, 'full-candidate');
+  assert.equal(done.compatibility.applyPatch, true);
+  assert.equal(done.backend, 'official-thread-start');
   assert.equal(done.supervisorThreadId, 'main-thread');
   assert.equal(done.plan.steps[1].step, 'implement');
   assert.equal(done.verification.output, 'verification ok');
