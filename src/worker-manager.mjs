@@ -5,8 +5,21 @@ import { reasoningSelection } from './capabilities.mjs';
 import { DEFAULT_LEASE_MS, DEFAULT_MAX_TOTAL_MS } from './store.mjs';
 import { codexParity } from './codex-model-info.mjs';
 
-const TERMINAL = new Set(['completed', 'failed', 'timed_out', 'cancelled']);
+const TERMINAL = new Set(['completed', 'failed', 'timed_out', 'cancelled', 'verification_failed', 'needs_followup']);
 const MAX_EVENTS = 100;
+const MAX_PENDING_INTERACTIONS = 16;
+const VERIFIER_SCHEMA = {
+  type: 'object',
+  properties: {
+    verdict: { type: 'string', enum: ['pass', 'fail', 'inconclusive'] },
+    summary: { type: 'string' },
+    checks: { type: 'array', items: { type: 'string' } },
+    findings: { type: 'array', items: { type: 'string' } },
+    evidence: { type: 'array', items: { type: 'string' } }
+  },
+  required: ['verdict', 'summary', 'checks', 'findings', 'evidence'],
+  additionalProperties: false
+};
 const HEARTBEAT_MS = 5000;
 const REVIEW_LEAD_MS = 90_000;
 const STALE_PROGRESS_MS = 5 * 60 * 1000;
@@ -73,17 +86,51 @@ function meaningful(message) {
 
 function progressEvidence(record) {
   const now = nowMs();
-  const heartbeat = Date.parse(record.lastHeartbeatAt || '') || 0;
+  const controller = Date.parse(record.controllerLivenessAt || record.startedAt || '') || 0;
+  const runtime = Date.parse(record.lastRuntimeEventAt || record.startedAt || '') || 0;
   const progress = Date.parse(record.lastMeaningfulProgressAt || record.startedAt || '') || 0;
-  const heartbeatAgeMs = heartbeat ? Math.max(0, now - heartbeat) : null;
+  const controllerLivenessAgeMs = controller ? Math.max(0, now - controller) : null;
+  const runtimeEventAgeMs = runtime ? Math.max(0, now - runtime) : null;
   const meaningfulProgressAgeMs = progress ? Math.max(0, now - progress) : null;
-  const heartbeatHealthy = heartbeatAgeMs !== null && heartbeatAgeMs <= HEARTBEAT_MS * 4;
+  const controllerHealthy = controllerLivenessAgeMs !== null && controllerLivenessAgeMs <= HEARTBEAT_MS * 4;
   const progressHealthy = meaningfulProgressAgeMs !== null && meaningfulProgressAgeMs <= STALE_PROGRESS_MS;
   return {
-    state: !heartbeatHealthy ? 'stalled' : (progressHealthy ? 'progressing' : 'heartbeat_only'),
-    heartbeatAgeMs,
+    state: !controllerHealthy ? 'control_plane_stalled' : (progressHealthy ? 'progressing' : 'runtime_quiet'),
+    controllerLivenessAgeMs,
+    runtimeEventAgeMs,
     meaningfulProgressAgeMs
   };
+}
+
+function verificationResult(result) {
+  const base = {
+    status: result?.status || null,
+    output: result?.output || '',
+    messages: Array.isArray(result?.messages) ? result.messages : [],
+    verdict: 'inconclusive',
+    summary: '',
+    checks: [],
+    findings: [],
+    evidence: []
+  };
+  try {
+    const parsed = JSON.parse(String(result?.output || '').trim());
+    if (!['pass', 'fail', 'inconclusive'].includes(parsed?.verdict)) throw new Error('invalid verifier verdict');
+    return {
+      ...base,
+      verdict: parsed.verdict,
+      summary: boundedText(parsed.summary, 4000),
+      checks: Array.isArray(parsed.checks) ? parsed.checks.slice(0, 100).map((value) => boundedText(value, 1000)) : [],
+      findings: Array.isArray(parsed.findings) ? parsed.findings.slice(0, 100).map((value) => boundedText(value, 2000)) : [],
+      evidence: Array.isArray(parsed.evidence) ? parsed.evidence.slice(0, 100).map((value) => boundedText(value, 2000)) : []
+    };
+  } catch (error) {
+    return {
+      ...base,
+      summary: 'Verifier output could not be parsed as the required structured verdict.',
+      findings: [boundedText(error?.message || error, 1000)]
+    };
+  }
 }
 
 export class WorkerManager {
@@ -172,14 +219,21 @@ export class WorkerManager {
       latestAction: null,
       plan: null,
       pendingInteraction: null,
+      pendingInteractions: [],
+      cancellation: { state: 'none', reason: null, requestedAt: null, confirmedAt: null, failedAt: null, error: null, proof: null },
       events: [],
       result: null,
       verification: null,
       error: null
     };
     await this.taskStore.write(record);
-    const client = this.clientFactory({ ...this.env, DWMCP_WORKER_CHILD: '1' });
-    const active = { client, record, cancelled: false, reviewTimer: null, deadlineTimer: null, heartbeatTimer: null, heartbeatCount: 0 };
+    const gatewayToken = await this.store.gatewayToken();
+    const clientEnv = this.codexConfig.runtimeEnv(gatewayToken, { DWMCP_WORKER_CHILD: '1' });
+    const client = this.clientFactory(clientEnv);
+    const active = {
+      client, record, cancelRequested: false, cancelConfirmed: false,
+      reviewTimer: null, deadlineTimer: null, heartbeatTimer: null, heartbeatCount: 0
+    };
     this.active.set(taskId, active);
     client.setServerRequestHandler?.((request) => this.#serverRequest(record, request));
     void this.#run(record, client);
@@ -193,6 +247,8 @@ export class WorkerManager {
       record.status = 'running';
       record.phase = 'Starting Codex Worker';
       record.startedAt = iso(started);
+      record.controllerLivenessAt = record.startedAt;
+      record.lastRuntimeEventAt = record.startedAt;
       record.lastHeartbeatAt = record.startedAt;
       record.lastMeaningfulProgressAt = record.startedAt;
       record.supervision.hardDeadlineAt = iso(started + record.supervision.maxTotalMs);
@@ -222,13 +278,18 @@ export class WorkerManager {
       });
 
       record.threadId = result.threadId || record.threadId;
+      record.sessionId = result.sessionId || record.sessionId || null;
       record.turnId = result.turnId || record.turnId;
-      if (active?.cancelled) {
+      if (/cancel|interrupt/i.test(String(result.status))) {
+        active.cancelConfirmed = true;
         record.status = 'cancelled';
         record.phase = 'Cancelled';
-      } else if (/cancel|interrupt/i.test(String(result.status))) {
-        record.status = 'cancelled';
-        record.phase = 'Cancelled';
+        record.cancellation = {
+          ...record.cancellation,
+          state: 'confirmed',
+          confirmedAt: iso(),
+          proof: { source: result.reconciled ? 'thread/read' : 'official_terminal', status: result.status }
+        };
       } else {
         record.result = { output: result.output, messages: result.messages, status: result.status };
         if (record.autoVerify) {
@@ -242,17 +303,36 @@ export class WorkerManager {
             cwd: record.cwd,
             sandbox: 'read-only',
             timeoutMs: Math.min(10 * 60 * 1000, Math.max(60_000, record.supervision.maxTotalMs)),
-            prompt: `Independently verify this completed implementation without modifying files. Inspect the workspace and run checks that are compatible with a read-only sandbox. Identify concrete regressions or confirm the result with evidence. Original task:\n\n${record.prompt}`,
-            developerInstructions: 'You are an independent verifier. The sandbox is read-only. Inspect and validate; never modify project files.',
+            outputSchema: VERIFIER_SCHEMA,
+            prompt: [
+              'Independently verify this completed implementation without modifying files.',
+              'Inspect the workspace and run checks that are compatible with a read-only sandbox.',
+              'Return only the structured JSON verdict required by the response schema.',
+              'Use verdict=pass only when the implementation satisfies the task with concrete evidence.',
+              'Use verdict=fail for a concrete regression or unmet requirement, and inconclusive when the environment prevents a reliable decision.',
+              `Original task:\n\n${record.prompt}`
+            ].join('\n\n'),
+            developerInstructions: 'You are an independent acceptance verifier. The sandbox is read-only. Never modify project files. Be strict and evidence-based.',
             onProgress: (message) => this.#progress(record, message, 'verification')
           });
-          record.verification = { output: verification.output, messages: verification.messages, status: verification.status };
+          record.verification = verificationResult(verification);
+          if (record.verification.verdict === 'fail') {
+            record.status = 'verification_failed';
+            record.phase = 'Verification failed';
+          } else if (record.verification.verdict === 'inconclusive') {
+            record.status = 'needs_followup';
+            record.phase = 'Verification inconclusive';
+          } else {
+            record.status = 'completed';
+            record.phase = 'Completed';
+          }
+        } else {
+          record.status = 'completed';
+          record.phase = 'Completed';
         }
-        record.status = 'completed';
-        record.phase = 'Completed';
       }
     } catch (error) {
-      if (active?.cancelled) {
+      if (active?.cancelConfirmed) {
         record.status = 'cancelled';
         record.phase = 'Cancelled';
       } else if (/TIMEOUT/.test(String(error?.code || ''))) {
@@ -267,6 +347,7 @@ export class WorkerManager {
       this.#clearSupervision(active);
       client.rejectAllServerRequests?.('worker task ended');
       record.pendingInteraction = null;
+      record.pendingInteractions = [];
       record.completedAt = record.completedAt || iso();
       record.updatedAt = iso();
       await this.#persist(record);
@@ -279,8 +360,8 @@ export class WorkerManager {
     if (!active) return;
     active.heartbeatTimer = setInterval(() => {
       if (terminal(active.record)) return;
-      active.record.lastHeartbeatAt = iso();
-      active.record.updatedAt = active.record.lastHeartbeatAt;
+      active.record.controllerLivenessAt = iso();
+      active.record.updatedAt = active.record.controllerLivenessAt;
       active.heartbeatCount += 1;
       if (active.heartbeatCount % 6 === 0) void this.#persist(active.record);
     }, HEARTBEAT_MS);
@@ -336,7 +417,7 @@ export class WorkerManager {
       return;
     }
 
-    if (evidence.state === 'heartbeat_only' && !record.supervision.graceUsed) {
+    if (evidence.state === 'runtime_quiet' && !record.supervision.graceUsed) {
       record.supervision.graceUsed = true;
       await this.extend(taskId, {
         extraMs: Math.min(HEARTBEAT_GRACE_MS, record.supervision.leaseMs),
@@ -346,8 +427,8 @@ export class WorkerManager {
       return;
     }
 
-    const reason = evidence.state === 'stalled'
-      ? 'supervision stopped Worker because the control heartbeat is stale'
+    const reason = evidence.state === 'control_plane_stalled'
+      ? 'supervision stopped Worker because the control-plane liveness heartbeat is stale'
       : 'supervision stopped Worker because the grace period ended without meaningful progress';
     record.supervision.lastDecision = 'cancelled';
     record.supervision.lastReason = reason;
@@ -385,7 +466,7 @@ export class WorkerManager {
     if (automatic) record.supervision.autoExtensionCount += 1;
     record.supervision.lastDecision = automatic ? 'auto_extended' : 'extended';
     record.supervision.lastReason = boundedText(reason, 1000);
-    record.phase = record.pendingInteraction ? 'Waiting for supervisor' : 'Working';
+    record.phase = record.pendingInteractions?.length ? 'Waiting for supervisor' : 'Working';
     record.events.push({
       at: iso(), method: 'worker/extended', type: 'lease',
       text: `${automatic ? 'automatic' : 'manual'} renewal until ${record.supervision.leaseDeadlineAt}: ${boundedText(reason, 500)}`,
@@ -400,12 +481,17 @@ export class WorkerManager {
 
   #serverRequest(record, request) {
     if (!record || terminal(record)) return;
-    record.pendingInteraction = {
+    const interaction = {
       requestId: String(request.id),
       method: boundedText(request.method, 256),
       params: safeObject(request.params),
       receivedAt: request.receivedAt || iso()
     };
+    record.pendingInteractions ||= [];
+    record.pendingInteractions = record.pendingInteractions.filter((entry) => entry.requestId !== interaction.requestId);
+    record.pendingInteractions.push(interaction);
+    if (record.pendingInteractions.length > MAX_PENDING_INTERACTIONS) record.pendingInteractions.splice(0, record.pendingInteractions.length - MAX_PENDING_INTERACTIONS);
+    record.pendingInteraction = record.pendingInteractions[0] || null;
     record.phase = 'Waiting for supervisor';
     record.lastMeaningfulProgressAt = iso();
     record.events.push({
@@ -422,14 +508,16 @@ export class WorkerManager {
     const active = this.active.get(taskId);
     if (!active) throw new Error('worker is not active');
     this.#authorize(active.record, supervisorThreadId);
-    const expected = active.record.pendingInteraction?.requestId;
-    const id = String(requestId || expected || '');
-    if (!id || !expected || id !== expected) throw new Error('requestId does not match the current pending interaction');
+    const pending = active.record.pendingInteractions || [];
+    const id = String(requestId || pending[0]?.requestId || '');
+    const interaction = pending.find((entry) => entry.requestId === id);
+    if (!id || !interaction) throw new Error('requestId is not a pending Codex interaction for this Worker');
     const outcome = reject
       ? active.client.rejectServerRequest(id, reason)
       : active.client.respondServerRequest(id, response && typeof response === 'object' ? response : {});
-    active.record.pendingInteraction = null;
-    active.record.phase = 'Working';
+    active.record.pendingInteractions = pending.filter((entry) => entry.requestId !== id);
+    active.record.pendingInteraction = active.record.pendingInteractions[0] || null;
+    active.record.phase = active.record.pendingInteractions.length ? 'Waiting for supervisor' : 'Working';
     active.record.lastMeaningfulProgressAt = iso();
     active.record.events.push({
       at: iso(), method: 'worker/interactionResolved', type: 'interaction',
@@ -449,10 +537,11 @@ export class WorkerManager {
     record.events.push(item);
     this.#trimEvents(record);
     record.lastHeartbeatAt = timestamp;
+    record.lastRuntimeEventAt = timestamp;
     record.lastProgressAt = timestamp;
     if (meaningful(message)) record.lastMeaningfulProgressAt = timestamp;
     const phase = phaseFrom(message);
-    if (phase && !record.pendingInteraction) record.phase = stage === 'verification' ? `Verifying · ${phase}` : phase;
+    if (phase && !(record.pendingInteractions?.length)) record.phase = stage === 'verification' ? `Verifying · ${phase}` : phase;
     const p = message?.params || {};
     const threadId = p.threadId || p.thread?.id;
     const turnId = p.turnId || p.turn?.id;
@@ -542,17 +631,72 @@ export class WorkerManager {
       return this.safe(stored);
     }
     this.#authorize(active.record, supervisorThreadId);
-    active.cancelled = true;
-    active.record.events.push({ at: iso(), method: 'worker/cancel', type: 'cancel', text: boundedText(reason, 700), stage: 'worker' });
-    this.#trimEvents(active.record);
-    if (active.record.threadId && active.record.turnId) await active.client.interrupt(active.record.threadId, active.record.turnId).catch(() => {});
-    active.client.rejectAllServerRequests?.('Worker cancelled by supervisor');
-    active.record.pendingInteraction = null;
-    active.record.status = 'cancelled';
+    const text = boundedText(reason, 700);
+    active.cancelRequested = true;
+    active.record.cancellation = {
+      ...active.record.cancellation,
+      state: 'requested',
+      reason: text,
+      requestedAt: iso(),
+      confirmedAt: null,
+      failedAt: null,
+      error: null,
+      proof: null
+    };
+    active.record.status = 'cancel_requested';
     active.record.phase = 'Cancelling';
+    active.record.events.push({ at: iso(), method: 'worker/cancelRequested', type: 'cancel', text, stage: 'worker' });
+    this.#trimEvents(active.record);
     active.record.updatedAt = iso();
     await this.#persist(active.record);
-    return this.safe(active.record);
+
+    try {
+      if (active.record.threadId && active.record.turnId) {
+        const proof = await active.client.interruptAndConfirm(active.record.threadId, active.record.turnId);
+        active.cancelConfirmed = true;
+        active.record.cancellation = {
+          ...active.record.cancellation,
+          state: 'confirmed',
+          confirmedAt: iso(),
+          proof: safeObject(proof)
+        };
+      } else {
+        await active.client.close?.();
+        active.cancelConfirmed = true;
+        active.record.cancellation = {
+          ...active.record.cancellation,
+          state: 'confirmed',
+          confirmedAt: iso(),
+          proof: { source: 'no_active_turn', officialInterrupt: false }
+        };
+      }
+      active.client.rejectAllServerRequests?.('Worker cancelled by supervisor');
+      active.record.pendingInteractions = [];
+      active.record.pendingInteraction = null;
+      active.record.status = 'cancelled';
+      active.record.phase = 'Cancelled';
+      active.record.events.push({ at: iso(), method: 'worker/cancelConfirmed', type: 'cancel', text, stage: 'worker' });
+      active.record.updatedAt = iso();
+      await this.#persist(active.record);
+      return this.safe(active.record);
+    } catch (error) {
+      active.cancelRequested = false;
+      active.record.cancellation = {
+        ...active.record.cancellation,
+        state: 'failed',
+        failedAt: iso(),
+        error: { code: String(error?.code || 'WORKER_CANCEL_FAILED'), message: boundedText(error?.message || error, 2000) }
+      };
+      active.record.status = 'running';
+      active.record.phase = active.record.pendingInteractions?.length ? 'Waiting for supervisor' : 'Working';
+      active.record.events.push({
+        at: iso(), method: 'worker/cancelFailed', type: 'cancel',
+        text: boundedText(error?.message || error, 700), stage: 'worker'
+      });
+      active.record.updatedAt = iso();
+      await this.#persist(active.record);
+      throw error;
+    }
   }
 
   async cancelForSupervisor(supervisorThreadId, reason = 'cancelled by supervisor mode change') {
@@ -576,7 +720,11 @@ export class WorkerManager {
     if (!record) return null;
     const { routeAlias, ...safe } = structuredClone(record);
     safe.prompt = safe.prompt?.slice(0, 16000) || '';
-    safe.progressEvidence = terminal(safe) ? { state: 'terminal', heartbeatAgeMs: null, meaningfulProgressAgeMs: null } : progressEvidence(safe);
+    safe.pendingInteractions ||= safe.pendingInteraction ? [safe.pendingInteraction] : [];
+    safe.pendingInteraction = safe.pendingInteractions[0] || null;
+    safe.progressEvidence = terminal(safe)
+      ? { state: 'terminal', controllerLivenessAgeMs: null, runtimeEventAgeMs: null, meaningfulProgressAgeMs: null }
+      : progressEvidence(safe);
     return safe;
   }
 }
