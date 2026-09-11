@@ -20,18 +20,35 @@ const candidate = output(['git', 'rev-parse', 'HEAD']);
 command(['npm', 'test']);
 command(['npm', 'run', 'check']);
 command(['npm', 'run', 'verify:upstream']);
+command(['npm', 'run', 'seal:simulated-target']);
 
 const lock = JSON.parse(await fs.readFile(path.join(projectRoot, 'tests', 'upstream-lock.json'), 'utf8'));
+const simulated = JSON.parse(await fs.readFile(path.join(projectRoot, '.seal', 'simulated-target.json'), 'utf8'));
+if (simulated.eligible !== true || simulated.status !== 'SIMULATED_TARGET_SEALED' || simulated.candidate !== candidate) {
+  throw new Error('simulated target evidence is not eligible for the current candidate');
+}
+if (simulated.upstream?.commit !== lock.commit) throw new Error('simulated target upstream pin differs');
 const tree = await treeDigest(projectRoot);
 const evidence = {
-  schemaVersion: 1,
+  schemaVersion: 2,
   kind: 'SOURCE_SEAL',
   eligible: true,
   status: 'SOURCE_SEALED',
   candidate,
-  upstream: { repository: lock.repository, commit: lock.commit },
+  upstream: {
+    repository: lock.repository,
+    release: lock.release,
+    tag: lock.tag,
+    commit: lock.commit,
+    expectedRuntimeVersion: lock.expectedRuntimeVersion
+  },
   tree,
-  gates: ['tests', 'static-check', 'pinned-upstream-contracts'],
+  simulatedTarget: {
+    status: simulated.status,
+    generatedAt: simulated.generatedAt,
+    proofs: simulated.proofs
+  },
+  gates: ['tests', 'static-check', 'pinned-stable-upstream-contracts', 'simulated-target-chain'],
   generatedAt: new Date().toISOString()
 };
 const dir = path.join(projectRoot, '.seal');
