@@ -1,4 +1,4 @@
-import { normalizeBaseUrl, listProviderModels, probeProtocol } from './provider.mjs';
+import { normalizeBaseUrl, listProviderModels, probeCodexCompatibility } from './provider.mjs';
 import { reasoningSelection } from './capabilities.mjs';
 
 function safeModel(model) {
@@ -107,8 +107,9 @@ export class DelegationRuntime {
     const model = modelId || provider.models?.[0]?.id;
     if (!model) throw new Error('provider has no model to probe');
     const key = provider.apiKeyCipher ? await this.vault.decrypt(provider.apiKeyCipher) : '';
-    const result = await probeProtocol({ provider, apiKey: key, model, fetchImpl: this.fetchImpl });
+    const result = await probeCodexCompatibility({ provider, apiKey: key, model, fetchImpl: this.fetchImpl });
     if (result.ok && ['responses', 'chat'].includes(result.protocol)) await this.store.setProtocol(id, model, result.protocol);
+    await this.store.setModelProbe(id, model, result);
     return { providerId: id, modelId: model, ...result };
   }
 
@@ -148,7 +149,17 @@ export class DelegationRuntime {
   }
   async codexStatus() { return this.codexConfig.status(); }
 
-  async workerStart(args, context = {}) { return this.workerManager.start({ ...args, supervisorThreadId: threadId(context) }); }
+  async workerStart(args, context = {}) {
+    const id = threadId(context);
+    const session = await this.store.getSession(id);
+    const provider = await this.store.provider(session.profile.providerId);
+    const model = provider?.models?.find((entry) => entry.id === session.profile.modelId);
+    const probedAt = Date.parse(model?.probe?.probedAt || 0);
+    if (provider && model && (!probedAt || Date.now() - probedAt > 24 * 60 * 60 * 1000)) {
+      await this.probeProvider(provider.id, model.id).catch(() => {});
+    }
+    return this.workerManager.start({ ...args, supervisorThreadId: id });
+  }
   async workerStatus(args, context = {}) { return this.workerManager.status(String(args.taskId || ''), threadId(context)); }
   async workerWait(args, context = {}) { return this.workerManager.wait(String(args.taskId || ''), args.waitMs, threadId(context)); }
   async workerSteer(args, context = {}) { return this.workerManager.steer(String(args.taskId || ''), String(args.direction || ''), threadId(context)); }
