@@ -10,7 +10,7 @@ if (Buffer.byteLength(html, 'utf8') > 512 * 1024) throw new Error('MCP App is un
 const mcp = await fs.readFile(path.join(projectRoot, 'mcp', 'server.mjs'), 'utf8');
 for (const needle of ['contextFrom','threadId','worker_extend','worker_respond','session_mode_get','session_mode_set']) if (!mcp.includes(needle)) throw new Error(`MCP supervision contract missing: ${needle}`);
 const manager = await fs.readFile(path.join(projectRoot, 'src', 'worker-manager.mjs'), 'utf8');
-for (const needle of ['autoExtensionCount','pendingInteraction','turn/steer','progressEvidence','leaseDeadlineAt','hardDeadlineAt']) if (!manager.includes(needle)) throw new Error(`Worker supervision contract missing: ${needle}`);
+for (const needle of ['autoExtensionCount','pendingInteraction','client.steer','progressEvidence','leaseDeadlineAt','hardDeadlineAt']) if (!manager.includes(needle)) throw new Error(`Worker supervision contract missing: ${needle}`);
 const sealFiles = ['tests/upstream-lock.json','scripts/verify-upstream-contracts.mjs','scripts/source-seal.mjs','scripts/target-seal.mjs','scripts/release-seal.mjs'];
 for (const rel of sealFiles) await fs.access(path.join(projectRoot, rel));
 console.log(`check ok: ${modules.length} modules, app=${Buffer.byteLength(html, 'utf8')} bytes, supervision=bounded, seal=source+target+release`);
