@@ -117,12 +117,14 @@ export class CodexAppServerClient {
 
   async runThread({
     model, modelProvider, prompt, cwd = process.cwd(), sandbox = 'workspace-write',
-    developerInstructions = '', timeoutMs = 60 * 60 * 1000, onProgress = null
+    developerInstructions = '', config = null,
+    timeoutMs = 60 * 60 * 1000, onProgress = null
   }) {
     if (!model || !modelProvider || !String(prompt || '').trim()) throw new Error('model, modelProvider and prompt are required');
     const started = await this.request('thread/start', {
       model, modelProvider, cwd, sandbox, approvalPolicy: 'never', ephemeral: true,
       serviceName: 'delegation-worker-mcp',
+      ...(config && typeof config === 'object' ? { config } : {}),
       ...(developerInstructions ? { developerInstructions } : {})
     }, 30000);
     const threadId = started?.thread?.id;
