@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "delegation-worker": {
+      "command": "./scripts/run-mcp.sh"
+    }
+  }
+}

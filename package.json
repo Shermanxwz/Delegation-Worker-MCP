@@ -1,0 +1,16 @@
+{
+  "name": "delegation-worker-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Universal worker delegation MCP with Codex-native third-party worker execution.",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node mcp/server.mjs",
+    "mcp": "node mcp/server.mjs",
+    "check": "node scripts/check.mjs",
+    "test": "node --test --test-concurrency=1 test/*.test.mjs"
+  }
+}
