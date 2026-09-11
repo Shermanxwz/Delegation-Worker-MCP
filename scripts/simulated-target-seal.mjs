@@ -29,12 +29,23 @@ async function freePort() {
 
 async function waitTerminal(runtime, taskId, threadId, timeoutMs = 10000) {
   const deadline = Date.now() + timeoutMs;
+  let last = null;
   while (Date.now() < deadline) {
-    const task = await runtime.workerStatus({ taskId }, { threadId });
-    if (['completed', 'failed', 'timed_out', 'cancelled', 'verification_failed', 'needs_followup'].includes(task?.status)) return task;
+    last = await runtime.workerStatus({ taskId }, { threadId });
+    if (['completed', 'failed', 'timed_out', 'cancelled', 'verification_failed', 'needs_followup'].includes(last?.status)) return last;
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
-  throw new Error(`simulated Worker did not terminate: ${taskId}`);
+  const diagnostic = {
+    taskId,
+    status: last?.status || null,
+    phase: last?.phase || null,
+    threadId: last?.threadId || null,
+    turnId: last?.turnId || null,
+    error: last?.error || null,
+    verification: last?.verification || null,
+    recentEvents: Array.isArray(last?.events) ? last.events.slice(-8) : []
+  };
+  throw new Error(`simulated Worker did not terminate: ${JSON.stringify(diagnostic)}`);
 }
 
 async function waitActive(runtime, taskId, threadId, timeoutMs = 5000) {
