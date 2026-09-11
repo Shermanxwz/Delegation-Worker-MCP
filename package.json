@@ -15,6 +15,7 @@
     "verify:upstream": "node scripts/verify-upstream-contracts.mjs",
     "seal:source": "node scripts/source-seal.mjs",
     "seal:target": "node scripts/target-seal.mjs",
-    "seal:release": "node scripts/release-seal.mjs"
+    "seal:release": "node scripts/release-seal.mjs",
+    "seal:simulated-target": "node scripts/simulated-target-seal.mjs"
   }
 }
