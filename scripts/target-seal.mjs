@@ -26,6 +26,22 @@ function codexVersion(binary) {
   const result = spawnSync(binary, ['--version'], { encoding: 'utf8', env: process.env });
   return result.status === 0 ? result.stdout.trim() : null;
 }
+async function codexBinaryIdentity(binary, lock) {
+  const resolved = await fs.realpath(binary).catch(() => null);
+  if (!resolved || !path.isAbsolute(resolved)) throw new Error('archive target seal requires an absolute readable Codex binary path');
+  const bytes = await fs.readFile(resolved);
+  const version = codexVersion(resolved);
+  const expected = String(lock.expectedRuntimeVersion || lock.release || '');
+  if (!version || !expected || !version.includes(expected)) {
+    throw new Error(`target Codex runtime version mismatch: expected ${expected || 'pinned release'}, got ${version || 'unavailable'}`);
+  }
+  return {
+    path: resolved,
+    version,
+    sha256: crypto.createHash('sha256').update(bytes).digest('hex'),
+    bytes: bytes.length
+  };
+}
 async function waitFor(manager, taskId, supervisorThreadId, predicate, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -156,11 +172,12 @@ try {
   }
 
   const codexBefore = await codexConfig.status();
-  if (!codexBefore.installed) throw new Error('run Connect Codex in the Worker panel before target sealing');
+  if (codexBefore.legacyInstalled) throw new Error('legacy persistent Delegation Worker provider is still installed in Codex config; migrate to process-scoped runtime configuration first');
   await gateway.start();
 
   const binary = resolveCodexBinary(process.env);
-  accountClient = new CodexAppServerClient({ binary });
+  const binaryIdentity = await codexBinaryIdentity(binary, lock);
+  accountClient = new CodexAppServerClient({ binary: binaryIdentity.path });
   await accountClient.start();
   const accountBefore = await accountClient.request('account/read', { refreshToken: false }, 30000);
   const accountType = accountBefore?.account?.type || accountBefore?.type || null;
@@ -193,7 +210,7 @@ try {
   if (renewalDone.status !== 'completed') throw new Error(`renewal proof did not complete: ${renewalDone.status}`);
   if (!await existsWith(renewalFile, renewalMarker)) throw new Error('real Worker did not write the renewal proof file');
   if ((renewalDone.supervision?.autoExtensionCount || 0) < 1) throw new Error('bounded automatic renewal was not observed');
-  if (!renewalDone.verification) throw new Error('independent read-only verifier evidence is missing');
+  if (renewalDone.verification?.verdict !== 'pass') throw new Error(`independent read-only verifier did not pass: ${renewalDone.verification?.verdict || 'missing'}`);
   const toolEvidence = (renewalDone.events || []).some((event) => ['commandExecution', 'fileChange', 'mcpToolCall', 'dynamicToolCall'].includes(event.type));
   if (!toolEvidence) throw new Error('no official Codex tool activity was observed');
   if (renewalDone.compatibility?.grade !== 'full-candidate') throw new Error('Worker did not retain full-candidate compatibility at execution time');
@@ -274,9 +291,15 @@ try {
   });
   startedTaskIds.push(cancel.taskId);
   await waitFor(manager, cancel.taskId, sealThreadId, (task) => Boolean(task?.threadId && task?.turnId), 30_000);
-  await manager.cancel(cancel.taskId, 'target seal cancellation proof', sealThreadId);
+  const cancelRequested = await manager.cancel(cancel.taskId, 'target seal cancellation proof', sealThreadId);
+  if (cancelRequested.status !== 'cancelled' || cancelRequested.cancellation?.state !== 'confirmed') {
+    throw new Error('official turn/interrupt cancellation was not authoritatively confirmed');
+  }
+  if (!cancelRequested.cancellation?.proof || cancelRequested.cancellation.proof.source === 'local') {
+    throw new Error('official turn/interrupt cancellation proof is missing');
+  }
   const cancelDone = await waitTerminal(manager, cancel.taskId, sealThreadId, 30_000);
-  if (cancelDone.status !== 'cancelled') throw new Error('official turn/interrupt cancellation proof failed');
+  if (cancelDone.status !== 'cancelled' || cancelDone.cancellation?.state !== 'confirmed') throw new Error('official turn/interrupt cancellation proof failed');
 
   const detectedProtocol = (await store.protocol(provider.id, model.id))?.protocol || provider.protocol || 'auto';
   if (detectedProtocol !== 'responses') throw new Error(`archive-grade native tool parity requires Responses transport; detected ${detectedProtocol}`);
@@ -301,7 +324,8 @@ try {
       platform: process.platform,
       arch: process.arch,
       node: process.version,
-      codex: codexVersion(binary),
+      codex: binaryIdentity.version,
+      codexBinary: binaryIdentity,
       accountType: accountAfterType
     },
     provider: { id: provider.id, name: provider.name, protocol: detectedProtocol },
@@ -323,8 +347,10 @@ try {
       mcpResultContinuation: true,
       automaticBoundedRenewal: true,
       readOnlyVerifier: true,
+      verifierVerdictPass: true,
       officialSteer: true,
       officialInterrupt: true,
+      officialInterruptAuthoritativeConfirmation: true,
       officialAccountPreserved: true,
       officialTopLevelSelectorsPreserved: true
     },
