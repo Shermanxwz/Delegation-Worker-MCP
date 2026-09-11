@@ -1,6 +1,7 @@
 import http from 'node:http';
 import { applyReasoningToChat, applyReasoningToResponses, authHeaders, endpoints, readLimited, shouldTryChatFallback } from './provider.mjs';
 import { chatJsonToResponses, convertChatSse, responsesToChat } from './translate.mjs';
+import { codexModelInfoForRoute, loadCodexBaseInstructions } from './codex-model-info.mjs';
 
 const BODY_LIMIT = 16 * 1024 * 1024;
 const ERROR_LIMIT = 64 * 1024;
@@ -49,8 +50,16 @@ export class ModelGateway {
     if (req.method === 'GET' && url.pathname === '/health') return json(res, 200, { ok: true, service: 'delegation-worker-mcp', version: '0.1.0' });
     if (req.method === 'GET' && url.pathname === '/v1/models') {
       const state = await this.store.read();
-      const data = Object.values(state.routes).filter((route) => Date.parse(route.expiresAt || 0) > Date.now()).map((route) => ({ id: route.alias, object: 'model', owned_by: 'delegation-worker-mcp' }));
-      return json(res, 200, { object: 'list', data });
+      const baseInstructions = await loadCodexBaseInstructions();
+      const models = [];
+      for (const route of Object.values(state.routes)) {
+        if (Date.parse(route.expiresAt || 0) <= Date.now()) continue;
+        const provider = state.providers?.[route.providerId];
+        const model = provider?.models?.find((entry) => entry.id === route.modelId);
+        if (!model) continue;
+        models.push(codexModelInfoForRoute({ route, model, baseInstructions }));
+      }
+      return json(res, 200, { models });
     }
     if (req.method === 'POST' && url.pathname === '/v1/responses') return this.#responses(req, res, await readRequestJson(req));
     return json(res, 404, { error: { message: 'not found', type: 'not_found' } });
