@@ -1,7 +1,10 @@
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "repository": "openai/codex",
-  "commit": "e3a52b87b28760413eafa340e2ab23d653f0bbe7",
+  "release": "0.154.0",
+  "tag": "rust-v0.154.0",
+  "commit": "6b9826e3aa83b1a5947db50f4332cb9c65f1b340",
+  "expectedRuntimeVersion": "0.154.0",
   "contracts": [
     {
       "path": "codex-rs/app-server-protocol/schema/typescript/v2/ThreadStartParams.ts",
@@ -96,6 +99,35 @@
         "model_provider_id",
         "runtime_permission_profile",
         "client_mcp_extensions"
+      ]
+    },
+    {
+      "path": "codex-rs/app-server-protocol/src/protocol/common.rs",
+      "needles": [
+        "ThreadRead => \"thread/read\"",
+        "ThreadUnsubscribe => \"thread/unsubscribe\"",
+        "TurnInterrupt => \"turn/interrupt\"",
+        "ThreadTurnsList => \"thread/turns/list\"",
+        "ThreadItemsList => \"thread/items/list\""
+      ]
+    },
+    {
+      "path": "codex-rs/core/config.schema.json",
+      "needles": [
+        "\"model_providers\"",
+        "\"env_key\"",
+        "\"wire_api\"",
+        "\"requires_openai_auth\""
+      ]
+    },
+    {
+      "path": "sdk/python/src/openai_codex/client.py",
+      "needles": [
+        "config_overrides",
+        "args.extend([\"--config\", kv])",
+        "app-server",
+        "--listen",
+        "stdio://"
       ]
     }
   ],
