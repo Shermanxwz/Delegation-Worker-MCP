@@ -11,8 +11,11 @@ A universal Worker control plane exposed through MCP. The project keeps host int
 - Dynamic `/v1/models` discovery and per-`(provider, model)` reasoning metadata normalization.
 - No model-name guessing. If the upstream does not advertise reasoning controls, the UI exposes only `Auto` unless an operator override is configured.
 - A local Responses-compatible gateway that can route many upstream providers and fall back to Chat Completions when Responses is not supported.
+- Codex-native model discovery for Worker route aliases: the gateway exposes a real Codex `ModelsResponse`, projects explicit/probed third-party tool capability into `ModelInfo`, and keeps unknown capabilities conservative instead of guessing from model names.
+- Active compatibility probes distinguish native Responses, ordinary function tools (including the wire shape used by MCP tools), and custom/freeform tools required for native `apply_patch`.
 - A Codex adapter that installs one namespaced provider (`delegation_worker_gateway`) without changing the user's top-level official model/provider selectors.
 - Third-party workers run as independent official Codex App Server threads, so they can use the Codex workspace/tool harness while official ChatGPT authentication remains separate.
+- Worker status reports a compatibility grade. `full-candidate` means native Responses plus function and custom/freeform tool schemas were actively accepted; archive-grade parity still requires the real target seal to prove actual tool execution.
 
 ## Product boundary
 
