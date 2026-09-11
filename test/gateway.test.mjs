@@ -33,3 +33,76 @@ test('gateway routes an opaque Codex model alias to the selected provider/model 
   assert.equal(chatRequest.model, 'real-model'); assert.equal(chatRequest.reasoning_effort, 'high');
   await gateway.close(); await new Promise((r) => upstream.close(r));
 });
+
+test('gateway exposes route aliases as Codex ModelsResponse with probed ModelInfo', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'dwmcp-model-catalog-'));
+  const gatewayPort = await freePort();
+  const env = { ...process.env, DWMCP_DATA_DIR: dir, DWMCP_GATEWAY_PORT: String(gatewayPort) };
+  const store = new StateStore({ env });
+  const vault = new SecretVault({ env });
+  const provider = await store.saveProvider({ name: 'Upstream', baseUrl: 'https://example.com/v1', adapter: 'openai-compatible' });
+  await store.setProviderModels(provider.id, [{
+    id: 'real-model',
+    name: 'Real Model',
+    reasoning: { kind: 'unknown', options: [{ value: 'auto', label: 'Auto' }], default: 'auto' },
+    codex: { source: 'unknown', functionTools: null, customTools: null, mcpTools: null, inputModalities: [] },
+    probe: {
+      ok: true,
+      protocol: 'responses',
+      grade: 'full-candidate',
+      probedAt: new Date().toISOString(),
+      codex: { functionTools: true, customTools: true, mcpTools: true, parallelToolCalls: null }
+    }
+  }]);
+  const alias = await store.createRoute({ providerId: provider.id, modelId: 'real-model', reasoning: 'auto', capability: null });
+  const gateway = new ModelGateway({ store, vault, env });
+  await gateway.start();
+  const token = await store.gatewayToken();
+  const response = await fetch(`http://127.0.0.1:${gatewayPort}/v1/models`, {
+    headers: { authorization: `Bearer ${token}` }
+  });
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(Array.isArray(body.models), true);
+  const model = body.models.find((entry) => entry.slug === alias);
+  assert.ok(model);
+  assert.equal(model.shell_type, 'unified_exec');
+  assert.equal(model.apply_patch_tool_type, 'freeform');
+  assert.deepEqual(model.input_modalities, ['text']);
+  assert.match(model.base_instructions, /coding agent/i);
+  assert.equal(body.data, undefined);
+  await gateway.close();
+});
+
+test('gateway keeps native apply_patch disabled when custom/freeform tools were not proven', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'dwmcp-model-catalog-conservative-'));
+  const gatewayPort = await freePort();
+  const env = { ...process.env, DWMCP_DATA_DIR: dir, DWMCP_GATEWAY_PORT: String(gatewayPort) };
+  const store = new StateStore({ env });
+  const vault = new SecretVault({ env });
+  const provider = await store.saveProvider({ name: 'Upstream', baseUrl: 'https://example.com/v1', adapter: 'openai-compatible' });
+  await store.setProviderModels(provider.id, [{
+    id: 'function-only',
+    name: 'Function Only',
+    reasoning: { kind: 'unknown', options: [{ value: 'auto', label: 'Auto' }], default: 'auto' },
+    codex: { source: 'unknown', functionTools: null, customTools: null, mcpTools: null, inputModalities: [] },
+    probe: {
+      ok: true,
+      protocol: 'responses',
+      grade: 'responses-function',
+      probedAt: new Date().toISOString(),
+      codex: { functionTools: true, customTools: false, mcpTools: true, parallelToolCalls: null }
+    }
+  }]);
+  const alias = await store.createRoute({ providerId: provider.id, modelId: 'function-only', reasoning: 'auto', capability: null });
+  const gateway = new ModelGateway({ store, vault, env });
+  await gateway.start();
+  const token = await store.gatewayToken();
+  const body = await (await fetch(`http://127.0.0.1:${gatewayPort}/v1/models`, {
+    headers: { authorization: `Bearer ${token}` }
+  })).json();
+  const model = body.models.find((entry) => entry.slug === alias);
+  assert.equal(model.shell_type, 'unified_exec');
+  assert.equal(model.apply_patch_tool_type, null);
+  await gateway.close();
+});
