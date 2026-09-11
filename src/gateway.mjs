@@ -47,7 +47,7 @@ export class ModelGateway {
   async #handle(req, res) {
     if (!await this.#authorized(req)) return json(res, 401, { error: { message: 'invalid gateway token', type: 'authentication_error' } });
     const url = new URL(req.url || '/', `http://${req.headers.host || `${this.host}:${this.port}`}`);
-    if (req.method === 'GET' && url.pathname === '/health') return json(res, 200, { ok: true, service: 'delegation-worker-mcp', version: '0.1.0' });
+    if (req.method === 'GET' && url.pathname === '/health') return json(res, 200, { ok: true, service: 'delegation-worker-mcp', version: '0.3.0' });
     if (req.method === 'GET' && url.pathname === '/v1/models') {
       const state = await this.store.read();
       const baseInstructions = await loadCodexBaseInstructions();
