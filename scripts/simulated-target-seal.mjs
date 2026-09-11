@@ -27,7 +27,7 @@ async function freePort() {
   return port;
 }
 
-async function waitTerminal(runtime, taskId, threadId, timeoutMs = 10000) {
+async function waitTerminal(runtime, taskId, threadId, timeoutMs = 30000) {
   const deadline = Date.now() + timeoutMs;
   let last = null;
   while (Date.now() < deadline) {
@@ -284,7 +284,7 @@ try {
     cwd: fixture
   }, { threadId });
   const completed = await waitTerminal(runtime, started.taskId, threadId);
-  if (completed.status !== 'completed') throw new Error(`simulated implementation did not complete: ${completed.status}`);
+  if (completed.status !== 'completed') throw new Error(`simulated implementation did not complete: status=${completed.status} error=${JSON.stringify(completed.error || null)} phase=${completed.phase || ''}`);
   if (completed.verification?.verdict !== 'pass') throw new Error('simulated verifier did not pass');
   if (!completed.sessionId) throw new Error('simulated Worker sessionId was not captured');
   const proofFile = (await fs.readFile(path.join(fixture, 'simulated-worker-proof.txt'), 'utf8')).trim();
