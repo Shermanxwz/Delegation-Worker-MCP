@@ -10,27 +10,76 @@ async function freePort() { const server = net.createServer(); await new Promise
 
 function rpcClient(child) {
   let buffer = ''; const waits = new Map();
-  child.stdout.setEncoding('utf8'); child.stdout.on('data', (chunk) => { buffer += chunk; while (true) { const i = buffer.indexOf('\n'); if (i < 0) break; const line = buffer.slice(0, i).trim(); buffer = buffer.slice(i + 1); if (!line) continue; const m = JSON.parse(line); const waiter = waits.get(m.id); if (waiter) { waits.delete(m.id); waiter.resolve(m); } } });
+  child.stdout.setEncoding('utf8');
+  child.stdout.on('data', (chunk) => {
+    buffer += chunk;
+    while (true) {
+      const i = buffer.indexOf('\n'); if (i < 0) break;
+      const line = buffer.slice(0, i).trim(); buffer = buffer.slice(i + 1);
+      if (!line) continue;
+      const m = JSON.parse(line); const waiter = waits.get(m.id);
+      if (waiter) { waits.delete(m.id); waiter.resolve(m); }
+    }
+  });
   let id = 1;
-  return (method, params = {}) => new Promise((resolve, reject) => { const current = id++; const timer = setTimeout(() => { waits.delete(current); reject(new Error(`timeout ${method}`)); }, 5000); waits.set(current, { resolve: (v) => { clearTimeout(timer); resolve(v); } }); child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: current, method, params })}\n`); });
+  return (method, params = {}) => new Promise((resolve, reject) => {
+    const current = id++;
+    const timer = setTimeout(() => { waits.delete(current); reject(new Error(`timeout ${method}`)); }, 5000);
+    waits.set(current, { resolve: (v) => { clearTimeout(timer); resolve(v); } });
+    child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: current, method, params })}\n`);
+  });
+}
+function structured(message) {
+  const result = message?.result;
+  if (result?.structuredContent !== undefined) return result.structuredContent;
+  return JSON.parse(result?.content?.[0]?.text || '{}');
 }
 
-test('MCP server exposes a stable Worker App resource and keeps secret tools app-only', async () => {
+test('MCP server exposes Worker App, app-only settings, session mode, and thread-bound context', async () => {
   const home = await fs.mkdtemp(path.join(os.tmpdir(), 'dwmcp-mcp-')); const port = await freePort();
-  const child = spawn(process.execPath, ['mcp/server.mjs'], { cwd: path.resolve('.'), env: { ...process.env, HOME: home, DWMCP_DATA_DIR: path.join(home, 'data'), DWMCP_GATEWAY_PORT: String(port) }, stdio: ['pipe', 'pipe', 'pipe'] });
+  const child = spawn(process.execPath, ['mcp/server.mjs'], {
+    cwd: path.resolve('.'),
+    env: { ...process.env, HOME: home, DWMCP_DATA_DIR: path.join(home, 'data'), DWMCP_GATEWAY_PORT: String(port) },
+    stdio: ['pipe', 'pipe', 'pipe']
+  });
   let stderr = ''; child.stderr.setEncoding('utf8'); child.stderr.on('data', (x) => { stderr += x; });
   const call = rpcClient(child);
   try {
     const init = await call('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'test', version: '1' } });
     assert.equal(init.result.serverInfo.name, 'delegation-worker-mcp');
+    assert.equal(init.result.serverInfo.version, '0.2.0');
     child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized', params: {} })}\n`);
+
     const listed = await call('tools/list');
-    const panel = listed.result.tools.find((x) => x.name === 'worker_panel'); assert.equal(panel._meta.ui.resourceUri, 'ui://delegation-worker/control');
-    const secret = listed.result.tools.find((x) => x.name === 'provider_save'); assert.deepEqual(secret._meta.ui.visibility, ['app']);
-    const resources = await call('resources/list'); assert.equal(resources.result.resources[0].mimeType, 'text/html;profile=mcp-app');
-    const read = await call('resources/read', { uri: 'ui://delegation-worker/control' }); assert.match(read.result.contents[0].text, /ui\/initialize/); assert.match(read.result.contents[0].text, /开启 Worker/);
+    const panel = listed.result.tools.find((x) => x.name === 'worker_panel');
+    assert.equal(panel._meta.ui.resourceUri, 'ui://delegation-worker/control');
+    const secret = listed.result.tools.find((x) => x.name === 'provider_save');
+    assert.deepEqual(secret._meta.ui.visibility, ['app']);
+    const start = listed.result.tools.find((x) => x.name === 'worker_start');
+    assert.equal('providerId' in start.inputSchema.properties, false);
+    assert.equal('access' in start.inputSchema.properties, false);
+    assert.ok(listed.result.tools.some((x) => x.name === 'worker_extend'));
+    assert.ok(listed.result.tools.some((x) => x.name === 'worker_respond'));
+
+    const metaA = { threadId: 'official-thread-a' };
+    const metaB = { threadId: 'official-thread-b' };
+    let mode = structured(await call('tools/call', { name: 'session_mode_get', arguments: {}, _meta: metaA }));
+    assert.equal(mode.mode, 'NATIVE');
+    structured(await call('tools/call', { name: 'session_mode_set', arguments: { mode: 'WORKER' }, _meta: metaA }));
+    mode = structured(await call('tools/call', { name: 'session_mode_get', arguments: {}, _meta: metaA }));
+    assert.equal(mode.mode, 'WORKER');
+    const other = structured(await call('tools/call', { name: 'session_mode_get', arguments: {}, _meta: metaB }));
+    assert.equal(other.mode, 'NATIVE');
+
+    const resources = await call('resources/list');
+    assert.equal(resources.result.resources[0].mimeType, 'text/html;profile=mcp-app');
+    const read = await call('resources/read', { uri: 'ui://delegation-worker/control' });
+    assert.match(read.result.contents[0].text, /ui\/initialize/);
+    assert.match(read.result.contents[0].text, /原生/);
+    assert.match(read.result.contents[0].text, /Worker/);
   } finally {
-    child.kill('SIGTERM'); await new Promise((r) => { const timer = setTimeout(r, 1500); child.once('exit', () => { clearTimeout(timer); r(); }); });
+    child.kill('SIGTERM');
+    await new Promise((r) => { const timer = setTimeout(r, 1500); child.once('exit', () => { clearTimeout(timer); r(); }); });
   }
   assert.equal(stderr.includes('gateway unavailable'), false, stderr);
 });
