@@ -186,11 +186,27 @@ export class StateStore {
     const refreshedAt = new Date().toISOString();
     await this.update((state) => {
       if (!state.providers[id]) throw new Error('provider not found');
-      state.providers[id].models = models;
+      const previous = new Map((state.providers[id].models || []).map((model) => [model.id, model]));
+      state.providers[id].models = models.map((model) => {
+        const probe = previous.get(model.id)?.probe;
+        return probe && !model.probe ? { ...model, probe } : model;
+      });
       state.providers[id].refreshedAt = refreshedAt;
       return state;
     });
     return publicProvider(await this.provider(id));
+  }
+
+  async setModelProbe(providerId, modelId, probe) {
+    await this.update((state) => {
+      const provider = state.providers[providerId];
+      if (!provider) throw new Error('provider not found');
+      const model = (provider.models || []).find((entry) => entry.id === modelId);
+      if (!model) throw new Error('model not found');
+      model.probe = probe && typeof probe === 'object' ? structuredClone(probe) : null;
+      return state;
+    });
+    return (await this.provider(providerId))?.models?.find((entry) => entry.id === modelId) || null;
   }
 
   async getSession(threadId = '') {
