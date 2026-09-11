@@ -71,7 +71,10 @@ function rpcClient(child, stderr = () => '') {
       waits.delete(current);
       reject(new Error(`timeout ${method}; childExit=${child.exitCode ?? 'running'}; stderr=${stderr().trim().slice(-2000)}`));
     }, 5000);
-    waits.set(current, { resolve: (value) => { clearTimeout(timer); resolve(value); } });
+    waits.set(current, {
+      resolve: (value) => { clearTimeout(timer); resolve(value); },
+      reject: (error) => { clearTimeout(timer); reject(error); }
+    });
     child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: current, method, params })}\n`);
   });
 }
