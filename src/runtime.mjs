@@ -28,7 +28,7 @@ export class DelegationRuntime {
     ]);
     const active = await this.workerManager.currentForSupervisor(id);
     return {
-      version: '0.2.0',
+      version: '0.3.0',
       session,
       profile: session.profile,
       mode: session.mode,
@@ -158,12 +158,3 @@ export class DelegationRuntime {
     if (provider && model && (!probedAt || Date.now() - probedAt > 24 * 60 * 60 * 1000)) {
       await this.probeProvider(provider.id, model.id).catch(() => {});
     }
-    return this.workerManager.start({ ...args, supervisorThreadId: id });
-  }
-  async workerStatus(args, context = {}) { return this.workerManager.status(String(args.taskId || ''), threadId(context)); }
-  async workerWait(args, context = {}) { return this.workerManager.wait(String(args.taskId || ''), args.waitMs, threadId(context)); }
-  async workerSteer(args, context = {}) { return this.workerManager.steer(String(args.taskId || ''), String(args.direction || ''), threadId(context)); }
-  async workerExtend(args, context = {}) { return this.workerManager.extend(String(args.taskId || ''), { extraMs: args.extraMs, reason: args.reason }, threadId(context)); }
-  async workerRespond(args, context = {}) { return this.workerManager.respond(String(args.taskId || ''), args, threadId(context)); }
-  async workerCancel(args, context = {}) { return this.workerManager.cancel(String(args.taskId || ''), String(args.reason || 'cancelled by operator'), threadId(context)); }
-}
