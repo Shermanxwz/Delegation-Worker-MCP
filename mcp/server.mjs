@@ -13,7 +13,12 @@ import { DelegationRuntime } from '../src/runtime.mjs';
 const APP_URI = 'ui://delegation-worker/control';
 const APP_MIME = 'text/html;profile=mcp-app';
 const MAX_LINE = 2 * 1024 * 1024;
+const MODERN_PROTOCOL = '2026-07-28';
+const LEGACY_PROTOCOL = '2025-06-18';
+const UI_EXTENSION = 'io.modelcontextprotocol/ui';
+const SERVER_INFO = { name: 'delegation-worker-mcp', title: 'Delegation Worker MCP', version: '0.3.0' };
 const childMode = process.env.DWMCP_WORKER_CHILD === '1';
+let legacyClientCapabilities = {};
 
 const store = new StateStore();
 const vault = new SecretVault();
@@ -35,6 +40,40 @@ const APP_ONLY = { ui: { visibility: ['app'] } };
 const APP_RESOURCE = { ui: { resourceUri: APP_URI } };
 const READ_ONLY = { readOnlyHint: true, destructiveHint: false };
 const MUTATING = { readOnlyHint: false };
+const APP_ONLY_NAMES = new Set([
+  'session_mode_set', 'provider_save', 'provider_delete', 'provider_refresh',
+  'provider_probe', 'provider_model_override', 'worker_profile_set', 'codex_status', 'codex_install'
+]);
+
+function uiCapability(capabilities = {}) {
+  const extension = capabilities?.extensions?.[UI_EXTENSION] || capabilities?.experimental?.[UI_EXTENSION];
+  const mimeTypes = Array.isArray(extension?.mimeTypes) ? extension.mimeTypes : [];
+  return mimeTypes.includes(APP_MIME);
+}
+
+function requestInfo(message = {}) {
+  const meta = message?.params?._meta && typeof message.params._meta === 'object' ? message.params._meta : {};
+  const protocolVersion = String(meta['io.modelcontextprotocol/protocolVersion'] || '');
+  const modern = Boolean(protocolVersion);
+  const capabilities = modern
+    ? (meta['io.modelcontextprotocol/clientCapabilities'] || {})
+    : legacyClientCapabilities;
+  return {
+    modern,
+    protocolVersion: modern ? protocolVersion : null,
+    trustedApp: uiCapability(capabilities)
+  };
+}
+
+function serverCapabilities() {
+  return {
+    tools: {},
+    resources: {},
+    extensions: {
+      [UI_EXTENSION]: { mimeTypes: [APP_MIME] }
+    }
+  };
+}
 
 function contextFrom(params = {}) {
   const meta = params?._meta && typeof params._meta === 'object' ? params._meta : {};
@@ -46,7 +85,7 @@ function contextFrom(params = {}) {
   };
 }
 
-function tools() {
+function tools({ trustedApp = false } = {}) {
   const common = [
     {
       name: 'worker_panel', title: 'Worker',
@@ -153,7 +192,8 @@ function tools() {
           apiKey: { type: 'string', maxLength: 16384 },
           adapter: { type: 'string', enum: ['openai-compatible'] },
           authType: { type: 'string', enum: ['bearer', 'header'] },
-          headerName: { type: 'string', maxLength: 64 }
+          headerName: { type: 'string', maxLength: 64 },
+          headers: { type: 'object', additionalProperties: { type: 'string' } }
         }, ['name', 'baseUrl']), _meta: APP_ONLY, annotations: MUTATING
       },
       {
@@ -205,7 +245,11 @@ function tools() {
       }
     );
   }
-  return common;
+  return common.filter((tool) => {
+    if (tool.name === 'worker_panel') return trustedApp;
+    if (APP_ONLY_NAMES.has(tool.name)) return trustedApp;
+    return true;
+  });
 }
 
 async function call(name, args = {}, context = {}) {
@@ -247,8 +291,21 @@ async function call(name, args = {}, context = {}) {
   }
 }
 
-function reply(id, result, error = null) {
-  process.stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id, ...(error ? { error } : { result }) })}\n`);
+function reply(id, result, error = null, info = {}) {
+  let bodyResult = result;
+  if (!error && info.modern) {
+    const value = result && typeof result === 'object' && !Array.isArray(result) ? { ...result } : { value: result };
+    if (!value.resultType) value.resultType = 'complete';
+    value._meta = {
+      ...(value._meta && typeof value._meta === 'object' ? value._meta : {}),
+      'io.modelcontextprotocol/serverInfo': SERVER_INFO
+    };
+    bodyResult = value;
+  }
+  process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, ...(error ? { error } : { result: bodyResult }) }) + '\n');
+}
+function cacheable(result, info, cacheScope = 'private') {
+  return info.modern ? { ...result, ttlMs: 1000, cacheScope } : result;
 }
 function toolResult(value, isError = false) {
   return {
@@ -258,45 +315,82 @@ function toolResult(value, isError = false) {
 }
 
 async function handle(message) {
-  if (message.method === 'initialize') {
+  const info = requestInfo(message);
+  if (info.modern && info.protocolVersion !== MODERN_PROTOCOL) {
+    if (message.id !== undefined) return reply(message.id, null, { code: -32022, message: 'unsupported protocol version: ' + info.protocolVersion }, info);
+    return;
+  }
+
+  if (message.method === 'server/discover') {
+    const capabilities = message?.params?._meta?.['io.modelcontextprotocol/clientCapabilities'] || {};
     return reply(message.id, {
-      protocolVersion: message.params?.protocolVersion || '2025-06-18',
-      capabilities: { tools: {}, resources: {} },
-      serverInfo: { name: 'delegation-worker-mcp', title: 'Delegation Worker MCP', version: '0.2.0' }
-    });
+      supportedVersions: [MODERN_PROTOCOL, '2025-11-25', LEGACY_PROTOCOL],
+      capabilities: serverCapabilities(),
+      instructions: 'Delegation Worker MCP provides a supervised third-party Codex Worker runtime. Human control tools require the negotiated MCP Apps UI extension.',
+      ttlMs: 3600000,
+      cacheScope: 'public'
+    }, null, { modern: true, protocolVersion: MODERN_PROTOCOL, trustedApp: uiCapability(capabilities) });
+  }
+
+  if (message.method === 'initialize') {
+    legacyClientCapabilities = message.params?.capabilities && typeof message.params.capabilities === 'object'
+      ? message.params.capabilities
+      : {};
+    return reply(message.id, {
+      protocolVersion: message.params?.protocolVersion || LEGACY_PROTOCOL,
+      capabilities: serverCapabilities(),
+      serverInfo: SERVER_INFO
+    }, null, { modern: false });
   }
   if (message.method === 'notifications/initialized') return;
-  if (message.method === 'ping') return reply(message.id, {});
-  if (message.method === 'tools/list') return reply(message.id, { tools: tools() });
+  if (message.method === 'ping') return reply(message.id, {}, null, info);
+
+  if (message.method === 'tools/list') {
+    return reply(message.id, cacheable({ tools: tools(info) }, info), null, info);
+  }
+
   if (message.method === 'tools/call') {
+    const name = String(message.params?.name || '');
+    if ((name === 'worker_panel' || APP_ONLY_NAMES.has(name)) && !info.trustedApp) {
+      return reply(message.id, toolResult({
+        error: 'MCP Apps UI capability is required for this human control tool.',
+        code: 'MCP_APP_CAPABILITY_REQUIRED'
+      }, true), null, info);
+    }
     const context = contextFrom(message.params);
     try {
-      return reply(message.id, toolResult(await call(message.params?.name, message.params?.arguments || {}, context)));
+      return reply(message.id, toolResult(await call(name, message.params?.arguments || {}, context)), null, info);
     } catch (error) {
-      return reply(message.id, toolResult({ error: String(error.message || error), code: error.code || 'TOOL_ERROR' }, true));
+      return reply(message.id, toolResult({ error: String(error.message || error), code: error.code || 'TOOL_ERROR' }, true), null, info);
     }
   }
+
   if (message.method === 'resources/list') {
-    return reply(message.id, {
-      resources: [{
-        uri: APP_URI, name: 'Worker', title: 'Delegation Worker',
-        description: 'Choose Native or Worker mode, provider, model, dynamic reasoning and Worker permissions.',
-        mimeType: APP_MIME, _meta: { ui: { title: 'Worker' } }
-      }]
-    });
+    const resources = info.trustedApp ? [{
+      uri: APP_URI, name: 'Worker', title: 'Delegation Worker',
+      description: 'Choose Native or Worker mode, provider, model, dynamic reasoning and Worker permissions.',
+      mimeType: APP_MIME, _meta: { ui: { title: 'Worker' } }
+    }] : [];
+    return reply(message.id, cacheable({ resources }, info), null, info);
   }
-  if (message.method === 'resources/templates/list') return reply(message.id, { resourceTemplates: [] });
+
+  if (message.method === 'resources/templates/list') {
+    return reply(message.id, cacheable({ resourceTemplates: [] }, info), null, info);
+  }
+
   if (message.method === 'resources/read') {
-    if (message.params?.uri !== APP_URI) return reply(message.id, null, { code: -32002, message: 'resource not found' });
+    if (!info.trustedApp) return reply(message.id, null, { code: -32003, message: 'MCP Apps UI capability is required for this resource' }, info);
+    if (message.params?.uri !== APP_URI) return reply(message.id, null, { code: -32002, message: 'resource not found' }, info);
     const html = await fs.readFile(path.join(projectRoot, 'app', 'control.html'), 'utf8');
     return reply(message.id, {
       contents: [{
         uri: APP_URI, mimeType: APP_MIME, text: html,
         _meta: { ui: { title: 'Worker', csp: { connectDomains: [], resourceDomains: [] }, permissions: {} } }
       }]
-    });
+    }, null, info);
   }
-  if (message.id !== undefined) return reply(message.id, null, { code: -32601, message: 'method not found' });
+
+  if (message.id !== undefined) return reply(message.id, null, { code: -32601, message: 'method not found' }, info);
 }
 
 let buffer = '';
