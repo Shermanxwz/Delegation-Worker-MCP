@@ -28,10 +28,35 @@ const gateway = new ModelGateway({ store, vault });
 const workers = new WorkerManager({ store, taskStore, codexConfig });
 const runtime = new DelegationRuntime({ store, vault, workerManager: workers, codexConfig, gateway });
 
-await workers.initialize();
-await gateway.start().catch((error) => {
-  process.stderr.write(`delegation-worker-mcp: gateway unavailable: ${error.message}\n`);
-});
+let workersReady = null;
+let gatewayReady = null;
+let shuttingDown = false;
+
+function startServices() {
+  if (workersReady) return workersReady;
+  workersReady = workers.initialize().catch((error) => {
+    process.stderr.write(`delegation-worker-mcp: worker recovery unavailable: ${error.message}\n`);
+    throw error;
+  });
+  gatewayReady = workersReady
+    .then(async () => {
+      if (shuttingDown) return null;
+      try {
+        const started = await gateway.start();
+        if (shuttingDown) await gateway.close().catch(() => {});
+        return started;
+      } catch (error) {
+        process.stderr.write(`delegation-worker-mcp: gateway unavailable: ${error.message}\n`);
+        return null;
+      }
+    })
+    .catch(() => null);
+  return workersReady;
+}
+
+async function runtimeReady() {
+  return startServices();
+}
 
 function schema(properties = {}, required = []) {
   return { type: 'object', properties, ...(required.length ? { required } : {}), additionalProperties: false };
@@ -253,6 +278,7 @@ function tools({ trustedApp = false } = {}) {
 }
 
 async function call(name, args = {}, context = {}) {
+  await runtimeReady();
   switch (name) {
     case 'worker_panel': return runtime.status(context);
     case 'delegation_status': return runtime.status(context);
@@ -415,9 +441,13 @@ process.stdin.on('data', (chunk) => {
   }
 });
 
+startServices();
+
 const shutdown = async () => {
+  shuttingDown = true;
   await workers.close().catch(() => {});
   await gateway.close().catch(() => {});
+  if (gatewayReady) await gatewayReady.catch(() => {});
   process.exit(0);
 };
 process.once('SIGTERM', shutdown);
